@@ -1,0 +1,143 @@
+--- host.php.bak	2012-04-23 06:00:14.000000000 +0400
++++ host.php	2013-09-12 14:39:10.118926480 +0400
+@@ -32,6 +32,9 @@
+ include_once("./lib/ping.php");
+ include_once("./lib/data_query.php");
+ include_once("./lib/api_device.php");
++include_once($config["base_path"]."/lib/template.php");
++include_once($config["base_path"]."/lib/api_automation_tools.php");
++include(dirname(__FILE__)."/../include/global.php");
+ 
+ define("MAX_DISPLAY_PAGES", 21);
+ 
+@@ -41,7 +44,8 @@
+ 	3 => "Disable",
+ 	4 => "Change SNMP Options",
+ 	5 => "Clear Statistics",
+-	6 => "Change Availability Options"
++	6 => "Change Availability Options",
++	7 => "Create Graph Templates for Host"
+ 	);
+ 
+ $device_actions = api_plugin_hook_function('device_action_array', $device_actions);
+@@ -163,6 +167,7 @@
+ 
+ 		header("Location: host.php?action=edit&id=" . (empty($host_id) ? $_POST["id"] : $host_id));
+ 	}
++
+ }
+ 
+ /* ------------------------
+@@ -249,6 +254,59 @@
+ 
+ 				push_out_host($selected_items[$i]);
+ 			}
++		}elseif ($_POST["drp_action"] == "7") { /* Create Graph Templates for Host */
++			if ($_POST["cg_g"] > 0) {
++                                    $selected_graphs["cg"]{$_POST["cg_g"]}{$_POST["cg_g"]} = true;
++                        }
++			for ($i=0;($i<count($selected_items));$i++) {
++
++				/* ================= input validation ================= */
++                                input_validate_input_number($selected_items[$i]);
++                                /* ==================================================== */
++
++	 		        $host_id=$selected_items[$i];
++	                        $graph_template_id=$_POST["cg_g"];
++
++         	                $exists_already = db_fetch_cell("SELECT host_id FROM host_graph WHERE graph_template_id=$graph_template_id AND host_id=$host_id");
++				$host      = db_fetch_row("select id,description,hostname,host_template_id from host where id=".$host_id);
++
++
++				$existsAlready = db_fetch_cell("SELECT id FROM graph_local WHERE graph_template_id=$graph_template_id AND host_id=$host_id");
++
++	    	            if ((isset($existsAlready)) &&
++    	        	        ($existsAlready > 0) &&
++        	    	            (!$force)) {
++                		    $dataSourceId  = db_fetch_cell("SELECT
++            	        	            data_template_rrd.local_data_id
++	                        	    FROM graph_templates_item, data_template_rrd
++        	                            WHERE graph_templates_item.local_graph_id = " . $existsAlready . "
++	        	                        AND graph_templates_item.task_item_id = data_template_rrd.id
++		                                LIMIT 1");
++
++	                        debug_log_insert("new_graphs","NOTE: Not Adding Graph - this graph already exists - graph-id: ($existsAlready) - data-source-id: ($graph_template_id)");
++		                } else {
++    		                    $returnArray = create_complete_graph_from_template($graph_template_id, $host_id, "", $values["cg"]);
++	                            $dataSourceId = "";
++				    debug_log_insert("new_graphs", "Created graph for host: ".$host["description"]);
++	    	            }
++
++			    foreach($returnArray["local_data_id"] as $item) {
++	                        push_out_host($host_id, $item);
++	                    }
++
++
++			    /* Associated Graph Templates */
++        	            if ((isset($exists_already)) && ($exists_already > 0)) {
++				    debug_log_insert("new_graphs", "ERROR: Associated Graph Templates is already associated for host: ".$host["description"]);
++		            }else{
++				    debug_log_insert("new_graphs", "Add Associated Graph Templates for host: ".$host["description"]);
++
++				    db_execute("replace into host_graph (host_id,graph_template_id) values (" . $host_id . "," . $graph_template_id . ")");
++ 			            api_plugin_hook_function('add_graph_template_to_host', array("host_id" => $host_id, "graph_template_id" => $graph_template_id));
++
++     			    } 
++
++			}
+ 		}elseif ($_POST["drp_action"] == "1") { /* delete */
+ 			if (!isset($_POST["delete_type"])) { $_POST["delete_type"] = 2; }
+ 
+@@ -453,6 +511,22 @@
+ 				</tr>\n
+ 				";
+ 			$save_html = "<input type='button' value='Cancel' onClick='window.history.back()'>&nbsp;<input type='submit' value='Continue' title='Delete Device(s)'>";
++		} elseif ($_POST["drp_action"] == "7") { /* Create Graph Templates for Host */
++
++                $available_graph_templates = db_fetch_assoc("SELECT
++                        graph_templates.id, graph_templates.name
++                        FROM snmp_query_graph RIGHT JOIN graph_templates
++                        ON (snmp_query_graph.graph_template_id = graph_templates.id)
++                        WHERE (((snmp_query_graph.name) Is Null)) ORDER BY graph_templates.name");
++
++                /* create a row at the bottom that lets the user create any graph they choose */
++		form_hidden_box("host_template_id", $host_template_id, "0");
++                print " <tr bgcolor='#" . (($i % 2 == 0) ? "ffffff" : $colors["light"]) . "'>
++                                <td colspan='2' width='60' nowrap>
++                                        <strong>Create:</strong>&nbsp;";
++                                        form_dropdown("cg_g", $available_graph_templates, "name", "id", "", "(Select a graph type to create)", "", "textArea");
++
++			$save_html = "<input type='button' value='Cancel' onClick='window.history.back()'>&nbsp;<input type='submit' value='Continue' title='Place Device(s) on Tree'>";
+ 		}elseif (preg_match("/^tr_([0-9]+)$/", $_POST["drp_action"], $matches)) { /* place on tree */
+ 			print "	<tr>
+ 					<td class='textArea' bgcolor='#" . $colors["form_alternate1"]. "'>
+@@ -1217,7 +1291,28 @@
+ 		$_REQUEST["host_rows"] = read_config_option("num_rows_device");
+ 	}
+ 
+-	?>
++	
++
++       $debug_log = debug_log_return("new_graphs");
++
++        if (!empty($debug_log)) {
++                debug_log_clear("new_graphs");
++                if (read_config_option("cacti_popup_messages") == "on") { ?>
++                <div id='message'>
++                        <?php print "<table align='center' style='width:100%;background-color:#" . $colors["header"] . ";'><tr><td style='align:center;padding:3px;font-weight:bold;font-size:10pt;text-align:center;'>Graphs Created</td><td style='width:1px;align:right;'><input type='button' value='Clear' onClick='javascript:document.getElementById(\"message\").style.display=\"none\"' style='align=right;'></td></tr></table>";?>
++                        <?php print "<table align='left' style='width:100%;'><tr><td><ul style='text-align:left;white-space:nowrap;color:#000000;padding:2px 10px;margin:10px;'>" . $debug_log . "</ul></td></tr></table>";?>
++                </div>
++                <?php }else{ ?>
++                <table width='100%' style='background-color: #f5f5f5; border: 1px solid #bbbbbb;' align='center'>
++                        <tr bgcolor="<?php print $colors["light"];?>">
++                                <td style="padding: 3px; font-family: monospace;">
++                                        <ul style='margin:0px 5px;padding-left:10px'><?php print $debug_log;?></ul>
++                                </td>
++                        </tr>
++                </table>
++                <br><?php }
++        }
++    ?>
+ 	<script type="text/javascript">
+ 	<!--
+ 
